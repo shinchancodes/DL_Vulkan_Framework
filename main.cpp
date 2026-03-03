@@ -3,49 +3,34 @@
 #include "vulkan_base/ComputePipeline.h"
 #include "vulkan_base/ComputePass.h"
 
+#include "operations/Matmul.h"
+
 #include <iostream>
+#include <vector>
+#include <string>
 
 int main() {
     // --- Setup ---
     VulkanContext ctx;
     ctx.init(/*enableValidation=*/true);
 
-    // --- Data ---
-    std::vector<float> inputData  = { 1, 2, 3, 4 };
-    std::vector<float> outputData(4, 0.0f);
-    VkDeviceSize bufSize = 4 * sizeof(float);
+    std::vector<float> A = { 1, 2, 3, 4, 5, 6 }; // 2x3
+    std::vector<float> B = { 7, 8, 9, 10, 11, 12 }; // 3x2
+    uint32_t M = 2, K = 3, N = 2;
 
-    VulkanBuffer inputBuf, outputBuf;
-    inputBuf.create(ctx, bufSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    inputBuf.upload(ctx, inputData.data(), bufSize);
+    std::string spvPath = "shaders/matmul.spv"; // Path to your compiled shader
+    MatMul matmul(ctx, spvPath);
+    std::vector<float> C = matmul.run(A, B, M, K, N);
 
-    outputBuf.create(ctx, bufSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    // --- Pipeline ---
-    ComputePipeline pipeline;
-    pipeline.create(ctx.device, "shaders/headless.comp.spv", {
-        {0, inputBuf.buffer,  bufSize},
-        {1, outputBuf.buffer, bufSize},
-    });
-
-    // --- Dispatch ---
-    ComputePass pass;
-    pass.record(ctx.device, ctx.commandPool, pipeline, {4, 1, 1});
-    pass.submit(ctx.device, ctx.computeQueue);
-
-    // --- Read back ---
-    outputBuf.download(ctx, outputData.data(), bufSize);
-    for (int i = 0; i < 4; i++)
-        std::cout << "out[" << i << "] = " << outputData[i] << "\n";
+    // --- Print result ---
+    std::cout << "Result C = A * B:" << std::endl;
+    for (uint32_t i = 0; i < M; ++i) {
+        for (uint32_t j = 0; j < N; ++j) {
+            std::cout << C[i * N + j] << " ";
+        }
+        std::cout << std::endl;
+    }
 
     // --- Cleanup ---
-    pass.destroy(ctx.device, ctx.commandPool);
-    pipeline.destroy(ctx.device);
-    inputBuf.destroy(ctx.device);
-    outputBuf.destroy(ctx.device);
     ctx.destroy();
 }

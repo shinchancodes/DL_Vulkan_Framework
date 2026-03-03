@@ -1,0 +1,40 @@
+#version 450
+
+// C = A * B
+// A: M x K  (row-major, stored in binding 0)
+// B: K x N  (row-major, stored in binding 1)
+// C: M x N  (row-major, stored in binding 2)
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer MatA {
+    float A[];
+};
+
+layout(std430, binding = 1) readonly buffer MatB {
+    float B[];
+};
+
+layout(std430, binding = 2) writeonly buffer MatC {
+    float C[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint M;   // rows of A / rows of C
+    uint K;   // cols of A / rows of B
+    uint N;   // cols of B / cols of C
+} pc;
+
+void main() {
+    uint row = gl_GlobalInvocationID.x;  // row index in C
+    uint col = gl_GlobalInvocationID.y;  // col index in C
+
+    if (row >= pc.M || col >= pc.N) return;
+
+    float sum = 0.0;
+    for (uint k = 0; k < pc.K; ++k) {
+        sum += A[row * pc.K + k] * B[k * pc.N + col];
+    }
+
+    C[row * pc.N + col] = sum;
+}

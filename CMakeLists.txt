@@ -11,7 +11,7 @@ add_executable(VulkanDL_framework
     vulkan_base/VulkanBuffer.cpp
     vulkan_base/ComputePipeline.cpp
     vulkan_base/ComputePass.cpp
-    operations/Matmul.cpp
+    layers/linear.cpp
 )
 
 target_include_directories(VulkanDL_framework PRIVATE ${Vulkan_INCLUDE_DIRS})

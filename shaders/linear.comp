@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PC { uint M; uint K; } pc;
+
+layout(binding = 0) readonly buffer BufA { float A[]; };
+layout(binding = 1) readonly buffer BufX { float x[]; };
+layout(binding = 2) readonly buffer BufBias { float bias[]; };
+layout(binding = 3) writeonly buffer BufY { float y[]; };
+
+void main()
+{
+    uint row = gl_GlobalInvocationID.x;
+    if (row >= pc.M) return;
+
+    float sum = bias[row];
+    for (uint k = 0; k < pc.K; ++k)
+        sum += A[row * pc.K + k] * x[k];
+    y[row] = sum;            
+}

@@ -12,6 +12,7 @@ add_executable(VulkanDL_framework
     vulkan_base/ComputePipeline.cpp
     vulkan_base/ComputePass.cpp
     layers/linear.cpp
+    utils/gemm.cpp
 )
 
 target_include_directories(VulkanDL_framework PRIVATE ${Vulkan_INCLUDE_DIRS})

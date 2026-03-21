@@ -34,3 +34,9 @@ Thumbs.db
 # Vulkan crash dumps
 *.log
 vk_layer_settings.txt
+
+# Image files (if you want to ignore them)
+*.png
+*.jpg
+*.jpeg
+*.bmp

@@ -1,0 +1,5 @@
+pth: "model.pth"
+in_ch: 3
+out_ch: 3
+kernel_size: 3
+out: "weights"

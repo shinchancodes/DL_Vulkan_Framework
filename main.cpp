@@ -5,41 +5,22 @@
 
 #include "layers/conv2d.h"
 
+#include "preprocess/loadWeights.h"
 #include "imgHelpers/helpers.h"
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <vector>
-#include <algorithm>
 #include <stdexcept>
-
-// ==========================================================================
-// Kernel helpers (same as original main.cpp)
-// ==========================================================================
- 
-/**
- * Build a normalised box-blur kernel.
- * Every spatial position gets weight 1/(kH*kW); each output channel only
- * mixes its corresponding input channel (ic == oc % inC), so colour channels
- * are blurred independently.
- *
- * Layout: [kH, kW, inC, outC]  (same as your conv2d layer expects)
- */
-static std::vector<float> makeBlurKernel(int kH, int kW, int inC, int outC)
-{
-    std::vector<float> k(kH * kW * inC * outC, 0.0f);
-    const float w = 1.0f / static_cast<float>(kH * kW);
-    for (int ky = 0; ky < kH; ++ky)
-        for (int kx = 0; kx < kW; ++kx)
-            for (int oc = 0; oc < outC; ++oc)
-                for (int ic = 0; ic < inC; ++ic)
-                    if (ic == oc % inC)
-                        k[((ky * kW + kx) * inC + ic) * outC + oc] = w;
-    return k;
-}
+#include <string>
 
 
 int main()
 {
+    std::string metaPath   = "preprocess/bin/meta.json";
+    std::string kernelPath = "preprocess/bin/kernel.bin";
+
     const std::string inputPath  = "img/input.jpg";
     const std::string outputPath = "img/output.jpg";
 
@@ -56,55 +37,57 @@ int main()
                   << "  [" << imgH << "x" << imgW << "x" << imgC << "]\n";
  
         // ------------------------------------------------------------------
-        // 2. Configure convolution
-        //    OUT_C must be a multiple you choose; here we keep outC == inC (3)
-        //    for a passthrough that can be saved directly.  Change as needed.
+        // 2. Load SimpleCNN conv1 weights
         // ------------------------------------------------------------------
-        constexpr int OUT_C    = 3;   // set to 8 etc. if you want more feature maps
-        constexpr int K_H      = 3;
-        constexpr int K_W      = 3;
-        constexpr int PAD_H    = 1;
-        constexpr int PAD_W    = 1;
-        constexpr int STRIDE_H = 1;
-        constexpr int STRIDE_W = 1;
- 
+        KernelMeta km{};
+        std::vector<float> kernelWeights =
+            loadKernelFromFiles(metaPath, kernelPath, km);
+
+        if (km.inC != imgC)
+            throw std::runtime_error(
+                "Kernel inC=" + std::to_string(km.inC) +
+                " does not match image channels=" + std::to_string(imgC));
+
+        // ------------------------------------------------------------------
+        // 3. Build push constants directly from meta — no hardcoding
+        // ------------------------------------------------------------------
         ConvPushConsts pc{};
         pc.imgW    = imgW;
         pc.imgH    = imgH;
-        pc.inC     = imgC;
-        pc.outC    = OUT_C;
-        pc.kW      = K_W;
-        pc.kH      = K_H;
-        pc.padW    = PAD_W;
-        pc.padH    = PAD_H;
-        pc.strideW = STRIDE_W;
-        pc.strideH = STRIDE_H;
+        pc.inC     = km.inC;
+        pc.outC    = km.outC;
+        pc.kW      = km.kW;
+        pc.kH      = km.kH;
+        pc.padW    = km.padW;
+        pc.padH    = km.padH;
+        pc.strideW = km.strideW;
+        pc.strideH = km.strideH;
  
         // ------------------------------------------------------------------
-        // 3. Initialise Vulkan & run the layer
+        // 4. Initialise Vulkan & run the layer
         // ------------------------------------------------------------------
         VulkanContext ctx;
         ctx.init(/*enableValidation=*/true);
  
         Conv2D conv(ctx, pc);
-        conv.setWeights(makeBlurKernel(K_H, K_W, imgC, OUT_C));
+        conv.setWeights(kernelWeights);
  
         std::vector<float> hostOutput = conv.run(hostInput);
  
         std::cout << "Conv2D done.  Output elements: " << hostOutput.size() << "\n";
  
         // ------------------------------------------------------------------
-        // 4. Compute output spatial dimensions (for strided / padded convs)
+        // 5. Compute output spatial dimensions (for strided / padded convs)
         // ------------------------------------------------------------------
-        const int outH = (imgH + 2 * PAD_H - K_H) / STRIDE_H + 1;
-        const int outW = (imgW + 2 * PAD_W - K_W) / STRIDE_W + 1;
+        const int outH = (imgH + 2 * km.padH - km.kH) / km.strideH + 1;
+        const int outW = (imgW + 2 * km.padW - km.kW) / km.strideW + 1;
  
         // ------------------------------------------------------------------
-        // 5. Save result
+        // 6. Save result
         // ------------------------------------------------------------------
-        saveImagePNG(outputPath, hostOutput, outH, outW, OUT_C);
+        saveImagePNG(outputPath, hostOutput, outH, outW, km.outC);
         std::cout << "Saved:   " << outputPath
-                  << "  [" << outH << "x" << outW << "x" << OUT_C << "]\n";
+                  << "  [" << outH << "x" << outW << "x" << km.outC << "]\n";
  
         ctx.destroy();
     }

@@ -13,6 +13,7 @@ add_executable(VulkanDL_framework
     vulkan_base/ComputePass.cpp
     layers/linear.cpp
     layers/conv2d.cpp
+    layers/Relu.cpp
     utils/gemm.cpp
 )
 

@@ -1,0 +1,16 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(binding = 0) readonly buffer BufIn { float X[]; };
+layout(binding = 1) writeonly buffer BufOut { float y[]; };
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    
+    if (X[idx] < 0.0)
+        y[idx] = -X[idx];
+    else
+        y[idx] = X[idx];            
+}

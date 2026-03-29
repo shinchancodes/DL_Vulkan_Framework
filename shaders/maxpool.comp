@@ -1,0 +1,33 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) readonly  buffer Input  { float input_data[];  };
+layout(binding = 1) writeonly buffer Output { float output_data[]; };
+
+layout(push_constant) uniform PC {
+    int imgW;
+    int imgH;
+    int channels;
+};
+
+void main() {
+    int ox = int(gl_GlobalInvocationID.x);  // output col
+    int oy = int(gl_GlobalInvocationID.y);  // output row
+    int c  = int(gl_GlobalInvocationID.z);  // channel
+
+    int out_w = imgW / 2;
+    int out_h = imgH / 2;
+
+    if (ox >= out_w || oy >= out_h || c >= channels) return;
+
+    int ix = ox * 2;
+    int iy = oy * 2;
+
+    float v00 = input_data[( iy      * imgW +  ix     ) * channels + c];
+    float v01 = input_data[( iy      * imgW + (ix + 1)) * channels + c];
+    float v10 = input_data[((iy + 1) * imgW +  ix     ) * channels + c];
+    float v11 = input_data[((iy + 1) * imgW + (ix + 1)) * channels + c];
+
+    output_data[(oy * out_w + ox) * channels + c] = max(max(v00, v01), max(v10, v11));
+}

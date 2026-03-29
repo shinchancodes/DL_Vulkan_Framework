@@ -14,11 +14,11 @@ add_executable(VulkanDL_framework
     layers/linear.cpp
     layers/conv2d.cpp
     layers/Relu.cpp
+    layers/maxpool.cpp
     utils/gemm.cpp
 )
 
 target_include_directories(VulkanDL_framework PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(VulkanDL_framework PRIVATE Vulkan::Vulkan)
-
 
 find_program(GLSLANG glslangValidator REQUIRED)

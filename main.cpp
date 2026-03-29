@@ -1,23 +1,26 @@
-#include "vulkan_base/VulkanContext.h"
-
-#include "layers/Relu.h"
-
+#include <iostream>
+#include <fstream>
 #include <vector>
-#include <stdio.h>
+#include <stdexcept>
 
-int main()
-{
+#include "vulkan_base/VulkanContext.h"
+#include "layers/maxpool.h"
+
+int main() {
     VulkanContext ctx;
     ctx.init();
 
-    // Example input
-    const std::vector<float> X = { -1.0f, 0.0f, 1.0f, 2.0f, -0.5f, 3.0f, -2.0f, 4.0f };
-    Relu reluLayer(ctx, (int)X.size());
-    std::vector<float> Y = reluLayer.run(X);
+    // 64×64×16 dummy input (replace with real data)
+    std::vector<float> input(64 * 64 * 16, 1.0f);
 
-    // Print the output
-    for (size_t i = 0; i < Y.size(); ++i) {
-        printf("Y[%zu] = %f\n", i, Y[i]);
-    }
+    MaxPoolPushConsts pp { 64, 64, 16 };
+    MaxPool pool(ctx, pp);
+    auto output = pool.run(input);  // 32×32×16 floats
+
+    std::cout << "Input  size: " << input.size()  << "\n";  // 65536
+    std::cout << "Output size: " << output.size() << "\n";  // 16384
+    std::cout << "output[0]:   " << output[0]     << "\n";
+
+    ctx.destroy();
     return 0;
 }

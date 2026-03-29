@@ -1,3 +1,4 @@
+// conv2d.h
 #pragma once
 
 #include "../vulkan_base/VulkanContext.h"
@@ -26,14 +27,15 @@ public:
     ~Conv2D() {};
 
     void setWeights(const std::vector<float>& kernel);
+    void setBias(const std::vector<float>& bias);
     std::vector<float> run(const std::vector<float>& input);
 
 private:
     VulkanContext& ctx_;
-    VulkanBuffer inputBuffer_, kernelBuffer_, outputBuffer_;
+    VulkanBuffer inputBuffer_, kernelBuffer_, biasBuffer_, outputBuffer_;
     ComputePipeline pipeline_;
     ComputePass pass_;
-    
+
     ConvPushConsts pushConsts_;
 
     std::string spvPath_ = "shaders/spv/conv2d.spv";

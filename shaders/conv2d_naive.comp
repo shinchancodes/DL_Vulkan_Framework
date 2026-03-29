@@ -1,82 +1,48 @@
 #version 450
 
-// ---------------------------------------------------------------------------
-// Naive 2-D convolution compute shader
-//
-// Layout:
-//   binding 0  – input image  (float, row-major, W*H*C elements)
-//   binding 1  – kernel       (float, [kH * kW * inC * outC])
-//   binding 2  – output image (float, row-major, W*H*outC elements)
-//
-// Push constants carry all tensor dimensions.
-// ---------------------------------------------------------------------------
-
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// ---- storage buffers -------------------------------------------------------
 layout(std430, binding = 0) readonly  buffer InputBuf  { float inData[];  };
 layout(std430, binding = 1) readonly  buffer KernelBuf { float kernel[];  };
-layout(std430, binding = 2) writeonly buffer OutputBuf { float outData[]; };
+layout(std430, binding = 2) readonly  buffer BiasBuf   { float bias[];    };
+layout(std430, binding = 3) writeonly buffer OutputBuf { float outData[]; };
 
-// ---- push constants --------------------------------------------------------
 layout(push_constant) uniform PushConsts {
-    int imgW;    // input width
-    int imgH;    // input height
-    int inC;     // input channels
-    int outC;    // output channels
-    int kW;      // kernel width
-    int kH;      // kernel height
-    int padW;    // zero-padding in x
-    int padH;    // zero-padding in y
-    int strideW; // stride in x
-    int strideH; // stride in y
+    int imgW;
+    int imgH;
+    int inC;
+    int outC;
+    int kW;
+    int kH;
+    int padW;
+    int padH;
+    int strideW;
+    int strideH;
 } pc;
 
-// Derived output dimensions (computed in-shader for clarity)
 int outW() { return (pc.imgW + 2 * pc.padW - pc.kW) / pc.strideW + 1; }
 int outH() { return (pc.imgH + 2 * pc.padH - pc.kH) / pc.strideH + 1; }
 
-// ---------------------------------------------------------------------------
-// Index helpers
-// ---------------------------------------------------------------------------
-// input  layout: [H, W, inC]
-int inIdx(int h, int w, int c) {
-    return (h * pc.imgW + w) * pc.inC + c;
-}
+int inIdx(int h, int w, int c)          { return (h * pc.imgW + w) * pc.inC + c; }
+int kIdx(int kh, int kw, int ic, int oc){ return ((kh * pc.kW + kw) * pc.inC + ic) * pc.outC + oc; }
+int outIdx(int h, int w, int c)         { return (h * outW() + w) * pc.outC + c; }
 
-// kernel layout: [kH, kW, inC, outC]
-int kIdx(int kh, int kw, int ic, int oc) {
-    return ((kh * pc.kW + kw) * pc.inC + ic) * pc.outC + oc;
-}
-
-// output layout: [outH, outW, outC]
-int outIdx(int h, int w, int c) {
-    return (h * outW() + w) * pc.outC + c;
-}
-
-// ---------------------------------------------------------------------------
 void main() {
-    // Each invocation handles one (outX, outY, outCh) triple
-    int ox = int(gl_GlobalInvocationID.x);  // output column
-    int oy = int(gl_GlobalInvocationID.y);  // output row
-    int oc = int(gl_GlobalInvocationID.z);  // output channel
+    int ox = int(gl_GlobalInvocationID.x);
+    int oy = int(gl_GlobalInvocationID.y);
+    int oc = int(gl_GlobalInvocationID.z);
 
     if (ox >= outW() || oy >= outH() || oc >= pc.outC) return;
 
-    float acc = 0.0;
+    float acc = bias[oc];  // initialise accumulator with bias
 
     for (int ic = 0; ic < pc.inC; ++ic) {
         for (int kh = 0; kh < pc.kH; ++kh) {
             for (int kw = 0; kw < pc.kW; ++kw) {
-
-                // Corresponding input pixel (with padding offset)
                 int ih = oy * pc.strideH - pc.padH + kh;
                 int iw = ox * pc.strideW - pc.padW + kw;
-
-                // Zero-pad: skip pixels outside the input
                 if (ih < 0 || ih >= pc.imgH || iw < 0 || iw >= pc.imgW)
                     continue;
-
                 acc += inData[inIdx(ih, iw, ic)] * kernel[kIdx(kh, kw, ic, oc)];
             }
         }

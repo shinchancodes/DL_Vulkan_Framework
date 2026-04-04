@@ -4,48 +4,100 @@
  
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
+
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb/stb_image_resize.h"
 // --------------------------------------------------------------------------
 
 #include <algorithm>
 #include <stdexcept>
 
-// ==========================================================================
-// Image helpers
-// ==========================================================================
- 
-/**
- * Load an image from disk into a flat float vector (HWC, values in [0,1]).
- *
- * @param path     File path (PNG / JPG / BMP / TGA / …)
- * @param outH     Populated with image height in pixels
- * @param outW     Populated with image width  in pixels
- * @param outC     Populated with number of channels  (1, 3, or 4)
- * @param forceC   If > 0, force stb to decode to this many channels
- *                 (e.g. forceC=3 → always RGB even for RGBA source)
- * @return         Flat vector in row-major HWC order, dtype float, [0,1]
- */
-std::vector<float> loadImage(const std::string& path,
-                              int& outH, int& outW, int& outC,
-                              int forceC = 0)
-{
-    int w, h, c;
-    uint8_t* data = stbi_load(path.c_str(), &w, &h, &c, forceC);
-    if (!data)
-        throw std::runtime_error("stbi_load failed: " + std::string(stbi_failure_reason()));
- 
-    outW = w;
-    outH = h;
-    outC = (forceC > 0) ? forceC : c;
- 
-    const size_t n = static_cast<size_t>(outH) * outW * outC;
-    std::vector<float> buf(n);
-    for (size_t i = 0; i < n; ++i)
-        buf[i] = data[i] / 255.0f;          // normalise to [0,1]
- 
-    stbi_image_free(data);
-    return buf;
+// ── Image loader & preprocessor ───────────────────────────────────────────────
+// Simple bilinear resize (matches PyTorch INTER_LINEAR / antialias=False)
+std::vector<float> bilinearResize(const std::vector<float>& src, 
+                                   int src_w, int src_h, int channels,
+                                   int dst_w, int dst_h) {
+    std::vector<float> dst(dst_w * dst_h * channels);
+
+    float x_scale = (float)src_w / dst_w;
+    float y_scale = (float)src_h / dst_h;
+
+    for (int c = 0; c < channels; ++c) {
+        for (int dy = 0; dy < dst_h; ++dy) {
+            for (int dx = 0; dx < dst_w; ++dx) {
+                // Map destination pixel to source space
+                float sx = (dx + 0.5f) * x_scale - 0.5f;
+                float sy = (dy + 0.5f) * y_scale - 0.5f;
+
+                int x0 = (int)std::floor(sx), x1 = std::min(x0 + 1, src_w - 1);
+                int y0 = (int)std::floor(sy), y1 = std::min(y0 + 1, src_h - 1);
+                x0 = std::max(x0, 0);
+                y0 = std::max(y0, 0);
+
+                float wx = sx - std::floor(sx);
+                float wy = sy - std::floor(sy);
+
+                // Bilinear interpolation
+                float v00 = src[(y0 * src_w + x0) * channels + c];
+                float v10 = src[(y0 * src_w + x1) * channels + c];
+                float v01 = src[(y1 * src_w + x0) * channels + c];
+                float v11 = src[(y1 * src_w + x1) * channels + c];
+
+                dst[(dy * dst_w + dx) * channels + c] =
+                    (1 - wy) * ((1 - wx) * v00 + wx * v10) +
+                    wy  * ((1 - wx) * v01 + wx * v11);
+            }
+        }
+    }
+    return dst;
 }
- 
+
+// Returns flat float buffer in CHW order, shape [3, 64, 64]
+std::vector<float> loadImage(const std::string& image_path,
+                                    int target_w = 64, int target_h = 64) {
+    // --- Load image as RGB uint8 ---
+    int src_w, src_h, channels;
+    unsigned char* raw = stbi_load(image_path.c_str(), &src_w, &src_h, &channels, 3);
+    if (!raw) {
+        throw std::runtime_error("Failed to load image: " + image_path);
+    }
+    channels = 3; // forced RGB via the last arg above
+
+    // Print max/min like Python does
+    auto [mn, mx] = std::minmax_element(raw, raw + src_w * src_h * channels);
+    std::cout << "STB Max min: " << (int)*mx << " " << (int)*mn << std::endl;
+
+    // --- ToTensor(): uint8 [0,255] -> float32 [0.0, 1.0], HWC layout ---
+    std::vector<float> float_img(src_w * src_h * channels);
+    for (int i = 0; i < src_w * src_h * channels; ++i) {
+        float_img[i] = raw[i] / 255.0f;
+    }
+    stbi_image_free(raw);
+
+    // --- Resize (64, 64) with bilinear, antialias=False ---
+    std::vector<float> resized = bilinearResize(float_img, src_w, src_h, channels,
+                                                 target_w, target_h);
+
+    // --- Normalize((0.5,), (0.5,)): out = (in - 0.5) / 0.5 ---
+    // --- Convert HWC -> CHW ---
+    std::vector<float> tensor(channels * target_h * target_w);
+    for (int c = 0; c < channels; ++c) {
+        for (int y = 0; y < target_h; ++y) {
+            for (int x = 0; x < target_w; ++x) {
+                float val = resized[(y * target_w + x) * channels + c];
+                val = (val - 0.5f) / 0.5f;  // normalize
+                tensor[c * target_h * target_w + y * target_w + x] = val;
+            }
+        }
+    }
+
+    float minVal = *std::min_element(tensor.begin(), tensor.end());
+    float maxVal = *std::max_element(tensor.begin(), tensor.end());
+    std::cout << "Resized - Normalized Max min: " << maxVal << " " << minVal << std::endl;
+
+    return tensor;  // CHW float32, values in [-1, 1]
+}
+
 /**
  * Save a float HWC buffer as a PNG.
  *

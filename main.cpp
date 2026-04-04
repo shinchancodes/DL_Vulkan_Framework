@@ -7,15 +7,17 @@
 #include <numeric>
 #include <algorithm>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "imgHelpers/stb/stb_image.h"
-
 #include "vulkan_base/VulkanContext.h"
 
 #include "layers/conv2d.h"
 #include "layers/maxpool.h"
 #include "layers/Relu.h"
 #include "layers/linear.h"
+
+#include "imgHelpers/helpers.h"
+
+#define COMPARE_LAYER
+#include <iomanip>
 
 // ── Weight loader ─────────────────────────────────────────────────────────────
 
@@ -29,37 +31,8 @@ std::vector<float> loadBin(const std::string& path) {
     return data;
 }
 
-// ── Image loader & preprocessor ───────────────────────────────────────────────
-//
-//   Loads any image via stb_image, resizes to 64×64, converts to float,
-//   normalizes to [-1, 1] and returns in NHWC layout [64*64*3].
-//   Matches the Python preprocess(): arr = (arr / 255 - 0.5) / 0.5
 
-std::vector<float> loadImage(const std::string& path) {
-    int w, h, c;
-    unsigned char* px = stbi_load(path.c_str(), &w, &h, &c, 3);
-    if (!px) throw std::runtime_error("Cannot load image: " + path);
 
-    // Manual bilinear resize to 64×64
-    const int OUT = 64;
-    std::vector<float> img(OUT * OUT * 3);
-    float scaleX = (float)w / OUT;
-    float scaleY = (float)h / OUT;
-
-    for (int oy = 0; oy < OUT; ++oy) {
-        for (int ox = 0; ox < OUT; ++ox) {
-            int ix = std::min((int)(ox * scaleX), w - 1);
-            int iy = std::min((int)(oy * scaleY), h - 1);
-            for (int ch = 0; ch < 3; ++ch) {
-                float raw = px[(iy * w + ix) * 3 + ch] / 255.0f;
-                img[(oy * OUT + ox) * 3 + ch] = (raw - 0.5f) / 0.5f;  // → [-1, 1]
-            }
-        }
-    }
-
-    stbi_image_free(px);
-    return img;  // NHWC [64, 64, 3]
-}
 
 // ── Softmax ───────────────────────────────────────────────────────────────────
 
@@ -75,10 +48,145 @@ std::vector<float> softmax(const std::vector<float>& logits) {
     return probs;
 }
 
+
+#ifdef COMPARE_LAYER
+// ── Comparison helper ─────────────────────────────────────────────────────────
+
+void compare(const std::vector<float>& vulkan,
+             const std::string& refPath,
+             const std::string& layerName)
+{
+    // Load reference
+    std::ifstream f(refPath, std::ios::binary | std::ios::ate);
+    if (!f) { std::cerr << "  [SKIP] " << refPath << " not found\n"; return; }
+    size_t bytes = f.tellg(); f.seekg(0);
+    std::vector<float> ref(bytes / sizeof(float));
+    f.read(reinterpret_cast<char*>(ref.data()), bytes);
+
+    if (ref.size() != vulkan.size()) {
+        std::cerr << "  [" << layerName << "] SIZE MISMATCH"
+                  << "  ref=" << ref.size()
+                  << "  vulkan=" << vulkan.size() << "\n";
+        return;
+    }
+
+    float maxErr = 0.0f, sumErr = 0.0f;
+    int   worstIdx = 0;
+    for (size_t i = 0; i < ref.size(); ++i) {
+        float err = std::abs(vulkan[i] - ref[i]);
+        sumErr += err;
+        if (err > maxErr) { maxErr = err; worstIdx = (int)i; }
+    }
+    float avgErr = sumErr / ref.size();
+
+    std::cout << "  [" << layerName << "]"
+              << "  max_err=" << maxErr
+              << "  avg_err=" << avgErr
+              << "  worst_idx=" << worstIdx
+              << "  ref=" << ref[worstIdx]
+              << "  vulkan=" << vulkan[worstIdx]
+              << (maxErr < 1e-3f ? "  ✓ OK" : "  ✗ MISMATCH") << "\n";
+}
+
+void debugConv1(const std::vector<float>& input,
+                const std::vector<float>& weights,
+                const std::vector<float>& bias,
+                const std::vector<float>& vulkanOut)
+{
+    // Manually compute output[oy=0, ox=0, oc=0] on CPU
+    // Input  layout: [H, W, inC]    → (iy*W + ix)*inC + ic
+    // Weight layout: [kH, kW, inC, outC] → ((kh*kW + kw)*inC + ic)*outC + oc
+    const int W=64, H=64, inC=3, outC=16, kH=3, kW=3, pad=1;
+
+    int oc = 0;
+    float acc = bias[oc];
+    for (int ic = 0; ic < inC; ++ic) {
+        for (int kh = 0; kh < kH; ++kh) {
+            for (int kw = 0; kw < kW; ++kw) {
+                int ih = 0 + kh - pad;
+                int iw = 0 + kw - pad;
+                if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+                float in_val = input[(ih * W + iw) * inC + ic];
+                float w_val  = weights[((kh * kW + kw) * inC + ic) * outC + oc];
+                acc += in_val * w_val;
+            }
+        }
+    }
+
+    std::cout << "\n=== Conv1 Debug [oy=0, ox=0, oc=0] ===\n";
+    std::cout << "  CPU manual   = " << acc               << "\n";
+    std::cout << "  Vulkan out   = " << vulkanOut[0]      << "\n";   // [0,0,0] is index 0
+    std::cout << "  bias[0]      = " << bias[0]           << "\n";
+    std::cout << "  input[0,0,0] = " << input[0]          << "\n";
+    std::cout << "  input[0,0,1] = " << input[1]          << "\n";
+    std::cout << "  input[0,0,2] = " << input[2]          << "\n";
+    std::cout << "  weight[0]    = " << weights[0]        << "\n";
+
+    // Check first 5 output values
+    std::cout << "\n  First 5 vulkan outputs (all oc at [0,0]):\n";
+    for (int i = 0; i < 5; ++i)
+        std::cout << "    oc=" << i << "  " << vulkanOut[i] << "\n";
+}
+
+void deepCompare(const std::vector<float>& vulkan,
+                 const std::string& refPath,
+                 const std::string& layerName,
+                 int H, int W, int C)
+{
+    std::ifstream f(refPath, std::ios::binary | std::ios::ate);
+    if (!f) { std::cerr << "Cannot open " << refPath << "\n"; return; }
+    size_t bytes = f.tellg(); f.seekg(0);
+    std::vector<float> ref(bytes / sizeof(float));
+    f.read(reinterpret_cast<char*>(ref.data()), bytes);
+
+    std::cout << "\n=== " << layerName << " deep compare ===\n";
+    std::cout << "  ref size=" << ref.size() << "  vulkan size=" << vulkan.size() << "\n";
+
+    int mismatches = 0;
+    float maxErr = 0.0f;
+    int worstIdx = 0;
+
+    for (size_t i = 0; i < std::min(ref.size(), vulkan.size()); ++i) {
+        float err = std::abs(ref[i] - vulkan[i]);
+        if (err > 1e-3f) {
+            ++mismatches;
+            if (err > maxErr) { maxErr = err; worstIdx = (int)i; }
+
+            // Print first 10 mismatches with spatial coords
+            if (mismatches <= 10) {
+                int c  =  i % C;
+                int x  = (i / C) % W;
+                int y  = (i / C) / W;
+                std::cout << "  MISMATCH [y=" << y << " x=" << x << " c=" << c << "]"
+                          << "  ref=" << ref[i]
+                          << "  vulkan=" << vulkan[i]
+                          << "  err=" << err << "\n";
+            }
+        }
+    }
+
+    // Print a small spatial patch around worst mismatch
+    int wc =  worstIdx % C;
+    int wx = (worstIdx / C) % W;
+    int wy = (worstIdx / C) / W;
+    std::cout << "  Worst mismatch at [y=" << wy << " x=" << wx << " c=" << wc << "]\n";
+    std::cout << "  Total mismatches: " << mismatches
+              << " / " << ref.size()
+              << "  (" << 100.f * mismatches / ref.size() << "%)\n";
+
+    // Print first 16 values of both side by side
+    std::cout << "\n  First 16 values [ref | vulkan]:\n";
+    for (int i = 0; i < std::min(16, (int)ref.size()); ++i)
+        std::cout << "    [" << i << "]  " << ref[i] << "  |  " << vulkan[i] << "\n";
+}
+
+
+#endif
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
-    const std::string imagePath  = "img/9961.jpg";
+    const std::string imagePath  = "img/9828.jpg";
     const std::string weightsDir = "weightsParser/bin";
 
     // ── 1. Load image ─────────────────────────────────────────────────────────
@@ -115,8 +223,26 @@ int main(int argc, char** argv) {
     conv1.setBias(conv1_b);
     auto out_conv1 = conv1.run(input);          // [64*64*16]
 
+    #ifdef COMPARE_LAYER
+    float minVal = *std::min_element(out_conv1.begin(), out_conv1.end());
+    float maxVal = *std::max_element(out_conv1.begin(), out_conv1.end());
+    std::cout << "Conv1 Max min: " << maxVal << " " << minVal << std::endl;
+    
+    std::cout << "out_conv1 Weights: \n";
+    std::cout << std::fixed << std::setprecision(4);
+    for (int i = 0; i < conv1_w.size(); ++i) {
+        std::cout << conv1_w[i] << " ";
+        if ((i + 1) % 27 == 0) std::cout << "\n";
+    }
+
+    #endif
+
     Relu relu1(ctx, 64 * 64 * 16);
     auto out_relu1 = relu1.run(out_conv1);      // [64*64*16]
+    
+    #ifdef COMPARE_LAYER
+    compare(out_relu1, "activations/activations/after_relu1.bin", "relu1");
+    #endif
 
     MaxPoolPushConsts pp1 { 64, 64, 16 };
     MaxPool pool1(ctx, pp1);
